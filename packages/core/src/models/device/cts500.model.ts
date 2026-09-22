@@ -277,10 +277,20 @@ export class CTS500 extends Device implements ICTS500 {
 
   /**
    * Configures the device UART baud rate.
+   *
+   * Warning: this call changes the MCU UART speed. The transparent Bluetooth module keeps
+   * its own speed. When the two speeds differ, the link between the module and the MCU
+   * breaks. The link stays broken until you re-flash the device with a programmer. Call
+   * this method only when you can restore the device.
+   *
    * @param {CTS500BaudRate} baudRate - Desired baud rate.
    * @returns {Promise<void>} A promise that resolves when the command is acknowledged.
    */
   setBaudRate = async (baudRate: CTS500BaudRate): Promise<void> => {
+    console.warn(
+      `CTS500.setBaudRate(${baudRate}): this call changes the MCU UART speed and can permanently break the ` +
+        "Bluetooth link when the module baud does not match. Continue only when you can re-flash the device.",
+    )
     await this.applyConfigCommand(this.commands.SET_BAUD_RATE as number, [
       0x00,
       0x00,

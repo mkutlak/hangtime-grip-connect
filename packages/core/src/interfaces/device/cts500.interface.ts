@@ -76,6 +76,11 @@ export interface ICTS500 extends IDevice {
 
   /**
    * Configures the transparent UART baud rate on the device.
+   *
+   * Warning: this call changes the MCU UART speed. The Bluetooth module keeps its previous
+   * speed. When the two speeds differ, the link stays broken until you re-flash the device.
+   * Call this method only when you can restore the device.
+   *
    * @param {CTS500BaudRate} baudRate - Desired baud rate.
    * @returns {Promise<void>} A Promise that resolves when the command has been acknowledged.
    */

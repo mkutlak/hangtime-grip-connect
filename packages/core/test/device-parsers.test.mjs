@@ -743,6 +743,24 @@ describe("device notification parsers", () => {
     await assert.rejects(() => device.applyConfigCommand(0xc0, [0x00, 0x00, 0x00]), /write failed/)
   })
 
+  it("warns before changing the CTS500 UART baud rate and still sends the mapped payload", async (t) => {
+    const warn = t.mock.method(console, "warn", () => undefined)
+    const device = new CTS500()
+    let sent
+
+    device.queryFrame = async (message) => {
+      sent = message
+      return undefined
+    }
+
+    await device.setBaudRate(19200)
+
+    assert.equal(warn.mock.calls.length, 1)
+    assert.match(String(warn.mock.calls[0].arguments[0]), /permanently break the Bluetooth link/)
+    // The baud rate 19200 maps to the payload byte 0x01. The checksum stays valid.
+    assert.deepEqual([...sent], [0x05, 0xc0, 0x00, 0x00, 0x01, 0xc6])
+  })
+
   it("parses PB-700BT RPM notifications", () => {
     const device = new PB700BT()
     const notifications = captureNotifications(device)
