@@ -7,6 +7,13 @@ const CTS500_ACK_FRAME_LENGTH = 6
 const CTS500_DATA_FRAME_LENGTH = 7
 const CTS500_RESPONSE_TIMEOUT_MS = 2000
 
+/**
+ * Byte 1 of a weight frame is a status marker. It is not part of the weight value.
+ * Real CTS500 hardware sends 0x40. Related scales such as Tindeq send 0x01.
+ * {@link CTS500.isWeightFrame} accepts either marker.
+ */
+const CTS500_WEIGHT_STATUS = 0x40
+
 const CTS500_BAUD_RATE_PARAMS: Record<CTS500BaudRate, number> = {
   9600: 0x00,
   19200: 0x01,
@@ -80,11 +87,13 @@ export class CTS500 extends Device implements ICTS500 {
               id: "model",
               uuid: "00002a24-0000-1000-8000-00805f9b34fb", // MY-BT102 https://www.muyusmart.cn/product/my-bt102/
             },
-            // {
-            //   name: "Serial Number String (Blocked)",
-            //   id: "serial",
-            //   uuid: "00002a25-0000-1000-8000-00805f9b34fb",
-            // },
+            // Some MY-BT102 modules omit the serial characteristic. It is optional, and serial() guards the read.
+            {
+              name: "Serial Number String",
+              id: "serial",
+              uuid: "00002a25-0000-1000-8000-00805f9b34fb", // AB0BF754C0A4
+              optional: true,
+            },
             {
               name: "Firmware Revision String",
               id: "firmware",
@@ -190,6 +199,23 @@ export class CTS500 extends Device implements ICTS500 {
   }
 
   /**
+   * Reads the firmware version over the transparent UART service.
+   *
+   * The response carries three raw payload bytes. The encoding is unknown, and the bytes
+   * are not ASCII. The method returns the raw bytes as uppercase hex, for example "20 3A 96".
+   * @returns {Promise<string | undefined>} A Promise that resolves with the raw firmware payload as hex.
+   */
+  firmwareUart = async (): Promise<string | undefined> => {
+    const command = this.commands.GET_FIRMWARE_VERSION as Uint8Array
+    const frame = await this.queryFrame(command, (response) => this.isCommandResponse(response, command[1]))
+    if (!frame) {
+      return undefined
+    }
+
+    return this.formatFirmwarePayload(frame)
+  }
+
+  /**
    * Retrieves hardware version from the device.
    * @returns {Promise<string | undefined>} A Promise that resolves with the hardware version.
    */
@@ -264,7 +290,7 @@ export class CTS500 extends Device implements ICTS500 {
   serial = async (): Promise<string | undefined> => {
     const hasSerial = this.services
       .find((service) => service.id === "device")
-      ?.characteristics.some((characteristic) => characteristic.id === "serial")
+      ?.characteristics.some((characteristic) => characteristic.id === "serial" && characteristic.characteristic)
 
     // MY-BT102 variants can omit the serial characteristic entirely, so guard the read instead of letting it throw.
     if (!hasSerial) {
@@ -545,7 +571,8 @@ export class CTS500 extends Device implements ICTS500 {
     const matchedPendingRequest = this.consumePendingFrame(frame)
 
     if (this.isWeightFrame(frame)) {
-      // Weight uploads carry a big-endian centi-unit value across bytes 2..5.
+      // Byte 1 is a status marker (see CTS500_WEIGHT_STATUS). It is not part of the value.
+      // Weight uploads carry a big-endian centi-unit value across bytes 2 to 5.
       const weight = (frame[2] * 0x1000000 + frame[3] * 0x10000 + frame[4] * 0x100 + frame[5]) / 100
       this.recordWeightMeasurement(weight)
       this.writeCallback(weight.toFixed(2))
@@ -566,6 +593,11 @@ export class CTS500 extends Device implements ICTS500 {
       return
     }
 
+    if (this.isCommandResponse(frame, (this.commands.GET_FIRMWARE_VERSION as Uint8Array)[1])) {
+      this.writeCallback(this.formatFirmwarePayload(frame))
+      return
+    }
+
     if (frame.length === CTS500_ACK_FRAME_LENGTH && !matchedPendingRequest) {
       this.writeCallback("OK")
       return
@@ -578,6 +610,14 @@ export class CTS500 extends Device implements ICTS500 {
           .join(" "),
       )
     }
+  }
+
+  /**
+   * Formats the three raw firmware payload bytes as uppercase hex, for example "20 3A 96".
+   * The encoding is unknown, so the method does not decode the bytes as text.
+   */
+  private formatFirmwarePayload = (frame: Uint8Array): string => {
+    return [frame[3], frame[4], frame[5]].map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ")
   }
 
   /**
@@ -610,12 +650,17 @@ export class CTS500 extends Device implements ICTS500 {
 
   /**
    * Returns whether a frame contains a weight measurement payload.
+   *
+   * Byte 1 is a status marker. It is not part of the weight value. Real CTS500 hardware
+   * sends {@link CTS500_WEIGHT_STATUS} (0x40), and related scales such as Tindeq send 0x01.
+   * The method accepts either marker. A valid frame is a weight frame when byte 1 is
+   * neither a typed response (0x80) nor a known command opcode.
    */
   private isWeightFrame = (frame: Uint8Array): boolean => {
     return (
       frame.length === CTS500_DATA_FRAME_LENGTH &&
       frame[0] === CTS500_HEADER &&
-      frame[1] !== CTS500_RESPONSE_FLAG &&
+      (frame[1] === CTS500_WEIGHT_STATUS || frame[1] !== CTS500_RESPONSE_FLAG) &&
       !this.commandOpcodes.has(frame[1]) &&
       this.isValidFrame(frame)
     )
