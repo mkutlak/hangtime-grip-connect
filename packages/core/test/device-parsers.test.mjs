@@ -27,6 +27,12 @@ import {
   textView,
   uint32BePacket,
 } from "./helpers.mjs"
+import {
+  BluetoothDeviceMock,
+  createDeviceMockFromGripDevice,
+  installWebBluetoothMock,
+  WebBluetoothMock,
+} from "./web-bluetooth-helpers.mjs"
 
 function segmentPullupTrace(points, startMs, endMs, startForce, endForce, stepMs = 40) {
   const duration = Math.max(stepMs, endMs - startMs)
@@ -417,6 +423,161 @@ describe("device notification parsers", () => {
     device.handleNotifications(cts500Frame([0x05, 0x80, 0xc4, 0x00, 0x01, 0x63]))
 
     assert.deepEqual(responses, ["3.55"])
+  })
+
+  it("decodes a CTS500 weight frame with the 0x40 hardware status byte", () => {
+    const device = new CTS500()
+    const notifications = captureNotifications(device)
+
+    device.handleNotifications(dataView(cts500WeightFrameBytes(12.34, 0x40)))
+
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].current, 12.34)
+    assert.equal(notifications[0].peak, 12.34)
+    assert.equal(notifications[0].performance.packetIndex, 1)
+  })
+
+  it("still decodes a CTS500 weight frame with the legacy 0x01 Tindeq status byte", () => {
+    const device = new CTS500()
+    const notifications = captureNotifications(device)
+
+    device.handleNotifications(dataView(cts500WeightFrameBytes(12.34, 0x01)))
+
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].current, 12.34)
+  })
+
+  it("decodes a CTS500 battery response", () => {
+    const device = new CTS500()
+    const responses = []
+
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    device.handleNotifications(cts500Frame([0x05, 0x80, 0xc4, 0x00, 0x01, 0x7e]))
+
+    assert.deepEqual(responses, ["3.82"])
+  })
+
+  it("decodes a CTS500 temperature response", () => {
+    const device = new CTS500()
+    const responses = []
+
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    device.handleNotifications(cts500Frame([0x05, 0x80, 0xc5, 0x00, 0x00, 0x14]))
+
+    assert.deepEqual(responses, ["20"])
+  })
+
+  it("decodes a negative CTS500 temperature response", () => {
+    const device = new CTS500()
+    const responses = []
+
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    // A negative temperature is sent as 0x80 plus the absolute value. 0x80 + 7 gives -7 C.
+    device.handleNotifications(cts500Frame([0x05, 0x80, 0xc5, 0x00, 0x00, 0x87]))
+
+    assert.deepEqual(responses, ["-7"])
+  })
+
+  it("routes a CTS500 UART firmware response through the write callback", () => {
+    const device = new CTS500()
+    const responses = []
+
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    device.handleNotifications(cts500Frame([0x05, 0x80, 0xa4, 0x20, 0x3a, 0x96]))
+
+    assert.deepEqual(responses, ["20 3A 96"])
+  })
+
+  it("reads the CTS500 serial number when the characteristic is present", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = createDeviceMockFromGripDevice(device)
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    const deviceService = bluetoothDevice.getServiceMock("0000180a-0000-1000-8000-00805f9b34fb")
+    deviceService.getCharacteristicMock("00002a25-0000-1000-8000-00805f9b34fb").setValue(textView("AB0BF754C0A4"))
+
+    assert.equal(await device.serial(), "AB0BF754C0A4")
+  })
+
+  it("returns undefined for the CTS500 serial number when the characteristic is absent", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = new BluetoothDeviceMock({
+      name: "CTS500",
+      advertisedServices: device.services.map((service) => service.uuid),
+      services: device.services.map((service) =>
+        service.id === "device"
+          ? {
+              ...service,
+              characteristics: service.characteristics.filter((characteristic) => characteristic.id !== "serial"),
+            }
+          : service,
+      ),
+    })
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    await assert.doesNotReject(async () => assert.equal(await device.serial(), undefined))
+  })
+
+  it("reads the CTS500 BLE firmware characteristic", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = createDeviceMockFromGripDevice(device)
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    const deviceService = bluetoothDevice.getServiceMock("0000180a-0000-1000-8000-00805f9b34fb")
+    deviceService.getCharacteristicMock("00002a26-0000-1000-8000-00805f9b34fb").setValue(textView("109a"))
+
+    assert.equal(await device.firmware(), "109a")
+  })
+
+  it("reads the CTS500 firmware over UART and surfaces it through the write callback", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = createDeviceMockFromGripDevice(device)
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+    const responses = []
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    const cts500Service = bluetoothDevice.getServiceMock("0000ffe0-0000-1000-8000-00805f9b34fb")
+    const rx = cts500Service.getCharacteristicMock("0000ffe1-0000-1000-8000-00805f9b34fb")
+    device.write = async () => {
+      rx.emitValueChanged(cts500Frame([0x05, 0x80, 0xa4, 0x20, 0x3a, 0x96]))
+    }
+
+    assert.equal(await device.firmwareUart(), "20 3A 96")
+    assert.deepEqual(responses, ["20 3A 96"])
   })
 
   it("parses PB-700BT RPM notifications", () => {
