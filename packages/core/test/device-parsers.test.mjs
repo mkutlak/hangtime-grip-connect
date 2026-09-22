@@ -580,6 +580,39 @@ describe("device notification parsers", () => {
     assert.deepEqual(responses, ["20 3A 96"])
   })
 
+  it("throws a typed, actionable CTS500 timeout error when the device never replies", async () => {
+    const device = new CTS500()
+
+    await assert.rejects(
+      () => device.waitForFrame(() => false, 10),
+      (error) => {
+        assert.equal(error.name, "CTS500TimeoutError")
+        assert.match(error.message, /Timed out waiting for CTS500 response/)
+        assert.match(error.message, /38400/)
+        assert.match(error.message, /UART bridge/)
+        return true
+      },
+    )
+  })
+
+  it("detects CTS500 timeouts by type rather than by message wording", async () => {
+    const device = new CTS500()
+
+    // The client recognizes a timeout by type. The message text can change.
+    const timeout = new Error("some future timeout wording")
+    timeout.name = "CTS500TimeoutError"
+    device.queryFrame = async () => {
+      throw timeout
+    }
+    await assert.doesNotReject(() => device.applyConfigCommand(0xc0, [0x00, 0x00, 0x00]))
+
+    // Other failures must still propagate.
+    device.queryFrame = async () => {
+      throw new Error("write failed")
+    }
+    await assert.rejects(() => device.applyConfigCommand(0xc0, [0x00, 0x00, 0x00]), /write failed/)
+  })
+
   it("parses PB-700BT RPM notifications", () => {
     const device = new PB700BT()
     const notifications = captureNotifications(device)

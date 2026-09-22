@@ -6,6 +6,7 @@ const CTS500_RESPONSE_FLAG = 0x80
 const CTS500_ACK_FRAME_LENGTH = 6
 const CTS500_DATA_FRAME_LENGTH = 7
 const CTS500_RESPONSE_TIMEOUT_MS = 2000
+const CTS500_TIMEOUT_MESSAGE = "Timed out waiting for CTS500 response"
 
 /**
  * Byte 1 of a weight frame is a status marker. It is not part of the weight value.
@@ -13,6 +14,23 @@ const CTS500_RESPONSE_TIMEOUT_MS = 2000
  * {@link CTS500.isWeightFrame} accepts either marker.
  */
 const CTS500_WEIGHT_STATUS = 0x40
+
+/**
+ * Error thrown when a CTS500 connects but never replies over its transparent UART.
+ *
+ * A MY-BT102 module can connect, resolve its services, and answer writes while the
+ * UART bridge to the MCU is dead. Every command then times out. Only the hardware can
+ * fix this. Make sure that the wiring to the module is correct, and make sure that the
+ * module baud rate matches the MCU (38400).
+ */
+class CTS500TimeoutError extends Error {
+  constructor() {
+    super(
+      `${CTS500_TIMEOUT_MESSAGE}. The device connected but never replied. Make sure that the module wiring to the MCU UART bridge is correct, and make sure that the module baud rate matches the MCU (38400). You must repair the hardware. Software cannot fix it.`,
+    )
+    this.name = "CTS500TimeoutError"
+  }
+}
 
 const CTS500_BAUD_RATE_PARAMS: Record<CTS500BaudRate, number> = {
   9600: 0x00,
@@ -482,7 +500,8 @@ export class CTS500 extends Device implements ICTS500 {
   }
 
   /**
-   * Sends a configuration command that may reply with either a 6-byte echo, a typed response, or no reply after applying.
+   * Sends a configuration command. The device can answer with a 6-byte echo, a typed response, or nothing
+   * after it applies the change.
    */
   private applyConfigCommand = async (
     opcode: number,
@@ -494,8 +513,8 @@ export class CTS500 extends Device implements ICTS500 {
         (frame) => this.isAckFrame(frame, opcode, payload) || this.isCommandResponse(frame, opcode),
       )
     } catch (error) {
-      // Some CTS firmwares apply UART/A-D rate changes immediately and do not echo a matching confirmation frame back over BLE.
-      if (error instanceof Error && error.message === "Timed out waiting for CTS500 response") {
+      // Some firmware revisions apply a UART or A-D rate change immediately and send no matching answer.
+      if (error instanceof CTS500TimeoutError || (error instanceof Error && error.name === "CTS500TimeoutError")) {
         return
       }
 
@@ -728,7 +747,7 @@ export class CTS500 extends Device implements ICTS500 {
         }
 
         this.pendingFrame = undefined
-        reject(new Error("Timed out waiting for CTS500 response"))
+        reject(new CTS500TimeoutError())
       }, timeoutMs)
 
       this.pendingFrame = {
