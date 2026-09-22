@@ -341,7 +341,9 @@ export class CTS500 extends Device implements ICTS500 {
         command,
         (frame) =>
           // The device can start auto-uploading before it echoes the start command, so the first weight frame also confirms success.
-          this.isAckFrame(frame, command[1], [command[2], command[3], command[4]]) || this.isWeightFrame(frame),
+          this.isAckFrame(frame, command[1], [command[2], command[3], command[4]]) ||
+          this.isCommandResponse(frame, command[1]) ||
+          this.isWeightFrame(frame),
       )
     } catch (error) {
       this.isStreaming = false
@@ -361,7 +363,13 @@ export class CTS500 extends Device implements ICTS500 {
   stop = async (): Promise<void> => {
     this.isStreaming = false
     const command = this.commands.STOP_WEIGHT_MEAS as Uint8Array
-    await this.queryFrame(command, (frame) => this.isAckFrame(frame, command[1], [command[2], command[3], command[4]]))
+    await this.queryFrame(
+      command,
+      // This firmware answers STOP with a typed `05 80 AB` response. Older firmware revisions send a 6-byte echo.
+      (frame) =>
+        this.isAckFrame(frame, command[1], [command[2], command[3], command[4]]) ||
+        this.isCommandResponse(frame, command[1]),
+    )
   }
 
   /**
@@ -394,9 +402,19 @@ export class CTS500 extends Device implements ICTS500 {
     this.updateTimestamp()
     this.clearTareOffset()
     const command = this.commands.TARE_SCALE as Uint8Array
-    void this.queryFrame(command, (frame) =>
-      this.isAckFrame(frame, command[1], [command[2], command[3], command[4]]),
+    void this.queryFrame(
+      command,
+      // TARE can answer with a typed `05 80 A6` response, an echo, or the next weight frame.
+      // The software applies the tare offset anyway, so a silent device must not make tare fatal.
+      (frame) =>
+        this.isAckFrame(frame, command[1], [command[2], command[3], command[4]]) ||
+        this.isCommandResponse(frame, command[1]) ||
+        this.isWeightFrame(frame),
     ).catch((error: Error) => {
+      if (error instanceof CTS500TimeoutError || error.name === "CTS500TimeoutError") {
+        return
+      }
+
       console.error(error)
     })
     return true
@@ -420,7 +438,8 @@ export class CTS500 extends Device implements ICTS500 {
    * @returns {Promise<void>} A promise that resolves when the command is acknowledged.
    */
   zero = async (): Promise<void> => {
-    await this.expectAck(this.commands.ZERO_SCALE as number)
+    // ZERO_SCALE is a full frame. Pass its opcode byte, not the whole frame.
+    await this.expectAck((this.commands.ZERO_SCALE as Uint8Array)[1])
   }
 
   /**
@@ -490,13 +509,17 @@ export class CTS500 extends Device implements ICTS500 {
   }
 
   /**
-   * Sends a command that should be acknowledged with a 6-byte echo frame.
+   * Sends a command and waits for the answer. Firmware revisions differ. Some revisions send
+   * a typed `05 80 <opcode>` response, and others send a 6-byte echo frame.
    */
   private expectAck = async (
     opcode: number,
     payload: readonly [number, number, number] = [0x00, 0x00, 0x00],
   ): Promise<void> => {
-    await this.queryFrame(buildCommand(opcode, payload), (frame) => this.isAckFrame(frame, opcode, payload))
+    await this.queryFrame(
+      buildCommand(opcode, payload),
+      (frame) => this.isAckFrame(frame, opcode, payload) || this.isCommandResponse(frame, opcode),
+    )
   }
 
   /**
