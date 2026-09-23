@@ -27,7 +27,12 @@ import {
   textView,
   uint32BePacket,
 } from "./helpers.mjs"
-import { createDeviceMockFromGripDevice, installWebBluetoothMock, WebBluetoothMock } from "./web-bluetooth-helpers.mjs"
+import {
+  BluetoothDeviceMock,
+  createDeviceMockFromGripDevice,
+  installWebBluetoothMock,
+  WebBluetoothMock,
+} from "./web-bluetooth-helpers.mjs"
 
 function segmentPullupTrace(points, startMs, endMs, startForce, endForce, stepMs = 40) {
   const duration = Math.max(stepMs, endMs - startMs)
@@ -691,7 +696,7 @@ describe("device notification parsers", () => {
     assert.equal(await battery, "3.55")
   })
 
-  it("keeps the raw bytes of an unmatched CTS500 firmware answer", () => {
+  it("reports an unmatched CTS500 firmware answer as its payload hex", () => {
     const device = new CTS500()
     const responses = []
 
@@ -702,7 +707,7 @@ describe("device notification parsers", () => {
     // Unmatched typed answers to other commands are reported as "OK". The firmware answer carries data.
     device.handleNotifications(cts500Frame([0x05, 0x80, 0xa4, 0x20, 0x3a, 0x96]))
 
-    assert.deepEqual(responses, ["05 80 A4 20 3A 96 19"])
+    assert.deepEqual(responses, ["20 3A 96"])
   })
 
   it("logs the CTS500 tare() timeout when the device stays silent", async (t) => {
@@ -727,6 +732,138 @@ describe("device notification parsers", () => {
 
     assert.equal(error.mock.calls.length, 1)
     assert.match(error.mock.calls[0].arguments[0].message, /Timed out waiting for CTS500 response/)
+  })
+
+  it("decodes a CTS500 temperature response", () => {
+    const device = new CTS500()
+    const responses = []
+
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    device.handleNotifications(cts500Frame([0x05, 0x80, 0xc5, 0x00, 0x00, 0x14]))
+
+    assert.deepEqual(responses, ["20"])
+  })
+
+  it("decodes a negative CTS500 temperature response", () => {
+    const device = new CTS500()
+    const responses = []
+
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    // A negative temperature is sent as 0x80 plus the absolute value. 0x80 + 7 gives -7 C.
+    device.handleNotifications(cts500Frame([0x05, 0x80, 0xc5, 0x00, 0x00, 0x87]))
+
+    assert.deepEqual(responses, ["-7"])
+  })
+
+  it("reads the CTS500 BLE firmware characteristic", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = createDeviceMockFromGripDevice(device)
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    const deviceService = bluetoothDevice.getServiceMock("0000180a-0000-1000-8000-00805f9b34fb")
+    deviceService.getCharacteristicMock("00002a26-0000-1000-8000-00805f9b34fb").setValue(textView("109a"))
+
+    assert.equal(await device.firmware(), "109a")
+  })
+
+  it("reads the CTS500 firmware over UART and reports it through the write callback", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = createDeviceMockFromGripDevice(device)
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+    const responses = []
+    device.writeCallback = (response) => {
+      responses.push(response)
+    }
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    const cts500Service = bluetoothDevice.getServiceMock("0000ffe0-0000-1000-8000-00805f9b34fb")
+    const rx = cts500Service.getCharacteristicMock("0000ffe1-0000-1000-8000-00805f9b34fb")
+    const writes = []
+    device.write = async (_service, _characteristic, value) => {
+      writes.push([...value])
+      rx.emitValueChanged(cts500Frame([0x05, 0x80, 0xa4, 0x20, 0x3a, 0x96]))
+    }
+
+    assert.equal(await device.firmwareUart(), "20 3A 96")
+    assert.deepEqual(writes, [[0x05, 0xa4, 0x00, 0x00, 0x00, 0xa9]])
+    assert.deepEqual(responses, ["20 3A 96"])
+  })
+
+  it("reads the CTS500 serial number when the characteristic is present", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = createDeviceMockFromGripDevice(device)
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    const deviceService = bluetoothDevice.getServiceMock("0000180a-0000-1000-8000-00805f9b34fb")
+    deviceService.getCharacteristicMock("00002a25-0000-1000-8000-00805f9b34fb").setValue(textView("001122334455"))
+
+    assert.equal(await device.serial(), "001122334455")
+  })
+
+  it("returns undefined for the CTS500 serial number when the characteristic is absent", async (t) => {
+    const device = new CTS500()
+    const bluetoothDevice = new BluetoothDeviceMock({
+      name: "CTS500",
+      advertisedServices: device.services.map((service) => service.uuid),
+      services: device.services.map((service) =>
+        service.id === "device"
+          ? {
+              ...service,
+              characteristics: service.characteristics.filter((characteristic) => characteristic.id !== "serial"),
+            }
+          : service,
+      ),
+    })
+    installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+    await device.connect(
+      () => undefined,
+      (error) => assert.fail(error.message),
+    )
+
+    await assert.doesNotReject(async () => assert.equal(await device.serial(), undefined))
+  })
+
+  it("reads the CTS500 serial number through a platform read() that never sets the characteristic", async () => {
+    const device = new CTS500()
+    // The Capacitor and React Native wrappers override read() and never set `characteristic.characteristic`.
+    device.read = async (serviceId, characteristicId) => {
+      if (serviceId === "device" && characteristicId === "serial") {
+        return "001122334455"
+      }
+      throw new Error(`Characteristic "${characteristicId}" not found in service "${serviceId}"`)
+    }
+
+    assert.equal(await device.serial(), "001122334455")
+  })
+
+  it("returns undefined for the CTS500 serial number when read() throws", async () => {
+    const device = new CTS500()
+    device.read = async (serviceId, characteristicId) => {
+      throw new Error(`Characteristic "${characteristicId}" not found in service "${serviceId}"`)
+    }
+
+    await assert.doesNotReject(async () => assert.equal(await device.serial(), undefined))
   })
 
   it("parses PB-700BT RPM notifications", () => {

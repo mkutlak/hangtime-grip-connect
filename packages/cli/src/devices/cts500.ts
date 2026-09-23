@@ -28,6 +28,14 @@ const cts500: DeviceDefinition = {
       },
     },
     {
+      name: "Firmware (UART)",
+      description: "Read raw UART firmware payload as hex",
+      run: async (device) => {
+        const d = device as unknown as CTS500
+        printResult("Firmware (UART):", await d.firmwareUart())
+      },
+    },
+    {
       name: "Hardware",
       description: "Read hardware version",
       run: async (device) => {
