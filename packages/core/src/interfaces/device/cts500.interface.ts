@@ -22,6 +22,15 @@ export interface ICTS500 extends IDevice {
   firmware(): Promise<string | undefined>
 
   /**
+   * Reads the firmware version over the transparent UART service.
+   *
+   * The response contains three raw payload bytes. The encoding is unknown. The method
+   * returns the raw bytes as uppercase hex, for example "20 3A 96".
+   * @returns {Promise<string | undefined>} A Promise that resolves with the raw firmware payload as hex.
+   */
+  firmwareUart(): Promise<string | undefined>
+
+  /**
    * Retrieves hardware version from the device.
    * @returns {Promise<string | undefined>} A Promise that resolves with the hardware version.
    */

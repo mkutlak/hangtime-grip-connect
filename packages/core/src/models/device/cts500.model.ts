@@ -80,11 +80,13 @@ export class CTS500 extends Device implements ICTS500 {
               id: "model",
               uuid: "00002a24-0000-1000-8000-00805f9b34fb", // MY-BT102 https://www.muyusmart.cn/product/my-bt102/
             },
-            // {
-            //   name: "Serial Number String (Blocked)",
-            //   id: "serial",
-            //   uuid: "00002a25-0000-1000-8000-00805f9b34fb",
-            // },
+            // Web Bluetooth blocklists 0x2A25, and some MY-BT102 modules omit it.
+            {
+              name: "Serial Number String",
+              id: "serial",
+              uuid: "00002a25-0000-1000-8000-00805f9b34fb", // 001122334455
+              optional: true,
+            },
             {
               name: "Firmware Revision String",
               id: "firmware",
@@ -190,6 +192,23 @@ export class CTS500 extends Device implements ICTS500 {
   }
 
   /**
+   * Reads the firmware version over the transparent UART service.
+   *
+   * The response carries three raw payload bytes. The encoding is unknown, and the bytes
+   * are not ASCII. The method returns the raw bytes as uppercase hex, for example "20 3A 96".
+   * @returns {Promise<string | undefined>} A Promise that resolves with the raw firmware payload as hex.
+   */
+  firmwareUart = async (): Promise<string | undefined> => {
+    const command = this.commands.GET_FIRMWARE_VERSION as Uint8Array
+    const frame = await this.queryFrame(command, (response) => this.isCommandResponse(response, command[1]))
+    if (!frame) {
+      return undefined
+    }
+
+    return this.formatFirmwarePayload(frame)
+  }
+
+  /**
    * Retrieves hardware version from the device.
    * @returns {Promise<string | undefined>} A Promise that resolves with the hardware version.
    */
@@ -262,16 +281,12 @@ export class CTS500 extends Device implements ICTS500 {
    * @returns {Promise<string | undefined>} A Promise that resolves with the serial number.
    */
   serial = async (): Promise<string | undefined> => {
-    const hasSerial = this.services
-      .find((service) => service.id === "device")
-      ?.characteristics.some((characteristic) => characteristic.id === "serial")
-
-    // MY-BT102 variants can omit the serial characteristic entirely, so guard the read instead of letting it throw.
-    if (!hasSerial) {
+    try {
+      return await this.read("device", "serial", 250)
+    } catch {
+      // The read throws when the platform blocklists the characteristic or the module omits it.
       return undefined
     }
-
-    return await this.read("device", "serial", 250)
   }
 
   /**
@@ -585,14 +600,13 @@ export class CTS500 extends Device implements ICTS500 {
       return
     }
 
-    // Report an unmatched typed answer to a known command like an unmatched echo. The firmware answer carries data, so
-    // it keeps its raw bytes.
-    if (
-      !matchedPendingRequest &&
-      this.commandOpcodes.has(frame[2]) &&
-      frame[2] !== (this.commands.GET_FIRMWARE_VERSION as Uint8Array)[1] &&
-      this.isCommandResponse(frame, frame[2])
-    ) {
+    if (this.isCommandResponse(frame, (this.commands.GET_FIRMWARE_VERSION as Uint8Array)[1])) {
+      this.writeCallback(this.formatFirmwarePayload(frame))
+      return
+    }
+
+    // Report an unmatched typed answer to a known command like an unmatched echo.
+    if (!matchedPendingRequest && this.commandOpcodes.has(frame[2]) && this.isCommandResponse(frame, frame[2])) {
       this.writeCallback("OK")
       return
     }
@@ -609,6 +623,14 @@ export class CTS500 extends Device implements ICTS500 {
           .join(" "),
       )
     }
+  }
+
+  /**
+   * Formats the three raw firmware payload bytes as uppercase hex, for example "20 3A 96".
+   * The encoding is unknown, so the method does not decode the bytes as text.
+   */
+  private formatFirmwarePayload = (frame: Uint8Array): string => {
+    return [frame[3], frame[4], frame[5]].map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ")
   }
 
   /**
