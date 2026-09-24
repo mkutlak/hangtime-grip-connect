@@ -1081,6 +1081,43 @@ describe("device notification parsers", () => {
     assert.deepEqual(responses, ["20 3A 96"])
   })
 
+  it("estimates the CTS500 battery level from the reported voltage", async (t) => {
+    const cases = [
+      { hi: 0x01, lo: 0xa4, expected: "100" }, // 4.20 V, top of the table
+      { hi: 0x01, lo: 0x7e, expected: "50" }, // 3.82 V, exact table point
+      { hi: 0x01, lo: 0x4a, expected: "0" }, // 3.30 V, bottom of the table
+      { hi: 0x01, lo: 0x82, expected: "58" }, // 3.86 V, interpolated between 3.82 V -> 50 and 3.87 V -> 60
+      { hi: 0x01, lo: 0xb3, expected: "100" }, // 4.35 V, clamped above the top of the table
+      { hi: 0x01, lo: 0x2c, expected: "0" }, // 3.00 V, clamped below the bottom of the table
+    ]
+
+    for (const { hi, lo, expected } of cases) {
+      const device = new CTS500()
+      const bluetoothDevice = createDeviceMockFromGripDevice(device)
+      installWebBluetoothMock(t, new WebBluetoothMock([bluetoothDevice]))
+
+      await device.connect(
+        () => undefined,
+        (error) => assert.fail(error.message),
+      )
+
+      const cts500Service = bluetoothDevice.getServiceMock("0000ffe0-0000-1000-8000-00805f9b34fb")
+      const rx = cts500Service.getCharacteristicMock("0000ffe1-0000-1000-8000-00805f9b34fb")
+      device.write = async (_service, _characteristic, _value) => {
+        rx.emitValueChanged(cts500Frame([0x05, 0x80, 0xc4, 0x00, hi, lo]))
+      }
+
+      assert.equal(await device.batteryLevel(), expected)
+    }
+  })
+
+  it("resolves CTS500 batteryLevel() as undefined when battery() resolves undefined", async () => {
+    const device = new CTS500()
+    device.battery = async () => undefined
+
+    assert.equal(await device.batteryLevel(), undefined)
+  })
+
   it("reads the CTS500 serial number when the characteristic is present", async (t) => {
     const device = new CTS500()
     const bluetoothDevice = createDeviceMockFromGripDevice(device)

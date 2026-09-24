@@ -72,6 +72,18 @@ async function readSystemInfo(device: ConnectedDevice): Promise<string> {
       read: async (deviceRef) => (typeof deviceRef.battery === "function" ? deviceRef.battery() : undefined),
     },
     {
+      key: "batteryLevel",
+      signature: "batteryLevel()",
+      kind: "read",
+      description: "Estimated battery charge.",
+      label: "Battery level",
+      read: async (deviceRef) => {
+        const maybe = deviceRef as { batteryLevel?: () => Promise<unknown> | unknown }
+        const level = typeof maybe.batteryLevel === "function" ? await maybe.batteryLevel() : undefined
+        return level !== undefined ? `~${level}%` : undefined
+      },
+    },
+    {
       key: "firmware",
       signature: "firmware()",
       kind: "read",

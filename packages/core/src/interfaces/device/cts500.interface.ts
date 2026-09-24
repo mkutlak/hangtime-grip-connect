@@ -16,6 +16,14 @@ export interface ICTS500 extends IDevice {
   battery(): Promise<string | undefined>
 
   /**
+   * Estimates the battery charge as a percent, 0-100, returned as a string.
+   * This is an estimate from a generic single-cell Li-ion discharge curve. It is not a value the
+   * device reports.
+   * @returns {Promise<string | undefined>} A Promise that resolves with the estimated battery charge.
+   */
+  batteryLevel(): Promise<string | undefined>
+
+  /**
    * Stops automatic weight uploads, then disconnects the device.
    * The device keeps the upload state across a power cycle, so STOP goes out before the link closes.
    * @returns {Promise<void>} A Promise that resolves once the link is closed. It does not reject.

@@ -75,6 +75,26 @@ interface PendingFrame {
  * {@link https://www.alibaba.com/product-detail/Mini-Climbing-Training-Scale-CTS500-Aluminum_1601637814595.html}
  */
 export class CTS500 extends Device implements ICTS500 {
+  /**
+   * Battery constants
+   * Voltage-to-percent points for a generic single-cell Li-ion discharge curve, highest voltage first.
+   * The device only reports voltage. This table is used to estimate a charge percent from it.
+   */
+  private static readonly batteryVoltageTable: readonly (readonly [number, number])[] = [
+    [4.2, 100],
+    [4.1, 90],
+    [4.0, 80],
+    [3.92, 70],
+    [3.87, 60],
+    [3.82, 50],
+    [3.79, 40],
+    [3.77, 30],
+    [3.74, 20],
+    [3.68, 10],
+    [3.45, 5],
+    [3.3, 0],
+  ]
+
   private bufferedFrames = new Uint8Array(0)
   private pendingFrame: PendingFrame | undefined = undefined
   private requestQueue: Promise<void> = Promise.resolve()
@@ -199,6 +219,43 @@ export class CTS500 extends Device implements ICTS500 {
 
     const rawVoltage = (frame[4] << 8) | frame[5]
     return (rawVoltage / 100).toFixed(2)
+  }
+
+  /**
+   * Estimates the battery charge as a percent from the battery voltage.
+   * This is an estimate from a generic single-cell Li-ion discharge curve, not a value the device
+   * reports. Voltages at or above 4.20 V read as "100". Voltages at or below 3.30 V read as "0".
+   * A voltage between two table points is linearly interpolated between them.
+   * @returns {Promise<string | undefined>} A Promise that resolves with the estimated battery charge, 0-100.
+   */
+  batteryLevel = async (): Promise<string | undefined> => {
+    const voltageText = await this.battery()
+    if (voltageText === undefined) {
+      return undefined
+    }
+
+    const voltage = Number.parseFloat(voltageText)
+    const table = CTS500.batteryVoltageTable
+    const [topVoltage] = table[0]
+    const [bottomVoltage] = table[table.length - 1]
+
+    if (voltage >= topVoltage) {
+      return "100"
+    }
+    if (voltage <= bottomVoltage) {
+      return "0"
+    }
+
+    for (let index = 0; index < table.length - 1; index++) {
+      const [highVoltage, highPercent] = table[index]
+      const [lowVoltage, lowPercent] = table[index + 1]
+      if (voltage <= highVoltage && voltage >= lowVoltage) {
+        const ratio = (voltage - lowVoltage) / (highVoltage - lowVoltage)
+        return Math.round(lowPercent + ratio * (highPercent - lowPercent)).toString()
+      }
+    }
+
+    return "0"
   }
 
   /**

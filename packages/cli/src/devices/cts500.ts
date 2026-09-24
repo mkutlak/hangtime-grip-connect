@@ -13,10 +13,13 @@ const cts500: DeviceDefinition = {
   actions: [
     {
       name: "Battery",
-      description: "Read battery voltage",
+      description: "Read battery voltage and estimated charge",
       run: async (device) => {
         const d = device as unknown as CTS500
-        printResult("Battery:", await d.battery())
+        const voltage = await d.battery()
+        printResult("Battery:", voltage !== undefined ? `${voltage} V` : undefined)
+        const level = await d.batteryLevel()
+        printResult("Battery level:", level !== undefined ? `~${level}%` : undefined)
       },
     },
     {
